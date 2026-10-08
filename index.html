@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>אפליקציית חישוב שכר חודשי - מדריכי קדימה מדע</title>
+    <!-- Manifest & PWA Theme -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#4f46e5">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="חישוב שכר">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2910/2910756.png">
+
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- SheetJS for Excel Generation -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;600;700;800&display=swap');
+        body {
+            font-family: 'Rubik', sans-serif;
+            background-color: #f8fafc;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Register Service Worker for PWA
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(() => console.log('PWA Service Worker registered successfully.'))
+                    .catch((err) => console.log('PWA Service Worker registration failed:', err));
+            });
+        }
+
+        function App() {
+            // Auth State
+            const [registeredUser, setRegisteredUser] = useState(() => {
+                const saved = localStorage.getItem('app_registered_user');
+                return saved ? JSON.parse(saved) : null;
+            });
+
+            const [isLoggedIn, setIsLoggedIn] = useState(() => {
+                return sessionStorage.getItem('is_logged_in') === 'true';
+            });
+
+            // Toggle between login and register screens
+            const [isRegisterMode, setIsRegisterMode] = useState(() => {
+                const saved = localStorage.getItem('app_registered_user');
+                return !saved; // If no user registered, default to register mode
+            });
+
+            // Form inputs
+            const [usernameInput, setUsernameInput] = useState('');
+            const [passwordInput, setPasswordInput] = useState('');
+            const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
+            const [authError, setAuthError] = useState('');
+
+            // Rates state
+            const [rates, setRates] = useState(() => {
+                const saved = localStorage.getItem('work_rates');
+                const parsed = saved ? JSON.parse(saved) : {};
+                return {
+                    instruction: parsed.instruction ?? 90,
+                    preparation: parsed.preparation ?? 45,
+                    km: parsed.km ?? 1.2
+                };
+            });
+
+            // Logs state
+            const [logs, setLogs] = useState(() => {
+                const saved = localStorage.getItem('work_logs');
+                return saved ? JSON.parse(saved) : [];
+            });
+
+            // Form & Editing state
+            const [editingId, setEditingId] = useState(null);
+            const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+            const [type, setType] = useState('instruction');
+            const [startTime, setStartTime] = useState('08:00');
+            const [endTime, setEndTime] = useState('16:00');
+            
+            // Trip state & Work from home
+            const [isWorkFromHome, setIsWorkFromHome] = useState(false);
+            const [origin, setOrigin] = useState('');
+            const [stops, setStops] = useState([]); 
+            const [destination, setDestination] = useState('');
+            const [totalKmInput, setTotalKmInput] = useState('');
+
+            const [notes, setNotes] = useState('');
+            const [showRatesModal, setShowRatesModal] = useState(false);
+            
+            // מחזור השכר הנבחר (YYYY-MM)
+            const [payCycleMonth, setPayCycleMonth] = useState(new Date().toISOString().slice(0, 7));
+
+            // Rates editing state inside modal
+            const [tempRates, setTempRates] = useState(rates);
+
+            useEffect(() => {
+                localStorage.setItem('work_rates', JSON.stringify(rates));
+            }, [rates]);
+
+            useEffect(() => {
+                localStorage.setItem('work_logs', JSON.stringify(logs));
+            }, [logs]);
+
+            // מעבר למצב הרשמה - עם חסימה אם כבר קיים משתמש במחשב
+            const handleSwitchToRegister = () => {
+                if (registeredUser) {
+                    alert(`⛔ הרשמה חסומה:\nכבר קיים משתמש רשום במחשב/מכשיר זה (${registeredUser.username}).\nלא ניתן ליצור משתמש חדש נוסף במכשיר זה.`);
+                    setAuthError(`במחשב זה כבר רשום משתמש: "${registeredUser.username}". נא להתחבר עם הסיסמה שלך.`);
+                    return;
+                }
+                setIsRegisterMode(true);
+                setAuthError('');
+            };
+
+            // Register Handler
+            const handleRegister = (e) => {
+                e.preventDefault();
+                setAuthError('');
+
+                if (registeredUser) {
+                    setAuthError(`במחשב זה כבר רשום המשתמש "${registeredUser.username}". לא ניתן ליצור משתמש נוסף.`);
+                    return;
+                }
+
+                if (!usernameInput.trim() || !passwordInput) {
+                    setAuthError('נא למלא את כל השדות!');
+                    return;
+                }
+
+                if (passwordInput !== confirmPasswordInput) {
+                    setAuthError('הסיסמאות אינן תואמות!');
+                    return;
+                }
+
+                const newUser = {
+                    username: usernameInput.trim(),
+                    password: passwordInput
+                };
+
+                localStorage.setItem('app_registered_user', JSON.stringify(newUser));
+                setRegisteredUser(newUser);
+                setIsLoggedIn(true);
+                sessionStorage.setItem('is_logged_in', 'true');
+                alert('הרשמה בוצעה בהצלחה! התחברת למערכת.');
+            };
+
+            // Login Handler
+            const handleLogin = (e) => {
+                e.preventDefault();
+                setAuthError('');
+
+                if (!registeredUser) {
+                    setAuthError('לא נמצא משתמש רשום. נא לבצע הרשמה ראשונית.');
+                    return;
+                }
+
+                if (usernameInput.trim() === registeredUser.username && passwordInput === registeredUser.password) {
+                    setIsLoggedIn(true);
+                    sessionStorage.setItem('is_logged_in', 'true');
+                    setAuthError('');
+                } else {
+                    setAuthError('שם משתמש או סיסמה שגויים!');
+                }
+            };
+
+            // Logout Handler
+            const handleLogout = () => {
+                setIsLoggedIn(false);
+                sessionStorage.removeItem('is_logged_in');
+                setUsernameInput('');
+                setPasswordInput('');
+                setConfirmPasswordInput('');
+                setAuthError('');
+            };
+
+            // Calculate hours between start and end time
+            const calculateHours = (start, end) => {
+                if (!start || !end) return 0;
+                const [sH, sM] = start.split(':').map(Number);
+                const [eH, eM] = end.split(':').map(Number);
+                let diffMins = (eH * 60 + eM) - (sH * 60 + sM);
+                if (diffMins < 0) diffMins += 24 * 60;
+                return Math.max(0, +(diffMins / 60).toFixed(2));
+            };
+
+            const addStop = () => setStops([...stops, '']);
+
+            const updateStop = (index, value) => {
+                const updated = [...stops];
+                updated[index] = value;
+                setStops(updated);
+            };
+
+            const removeStop = (index) => {
+                setStops(stops.filter((_, i) => i !== index));
+            };
+
+            const getPayCycleForDate = (dateStr) => {
+                const d = new Date(dateStr);
+                const year = d.getFullYear();
+                const month = d.getMonth() + 1;
+                const day = d.getDate();
+
+                if (day >= 21) {
+                    const nextMonth = month === 12 ? 1 : month + 1;
+                    const nextYear = month === 12 ? year + 1 : year;
+                    return `${nextYear}-${String(nextMonth).padStart(2, '0')}`;
+                } else {
+                    return `${year}-${String(month).padStart(2, '0')}`;
+                }
+            };
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+
+                // בדיקת כפילות תאריכים
+                const existingLog = logs.find(l => l.date === date && l.id !== editingId);
+                if (existingLog) {
+                    alert(`שגיאה: כבר הוזן יום עבודה בתאריך ${date}. לא ניתן להזין תאריך כפול!`);
+                    return;
+                }
+
+                // בדיקת אימות לשיטת הנסיעה / עבודה מהבית
+                if (!isWorkFromHome) {
+                    if (!origin.trim() || !destination.trim()) {
+                        alert('שגיאה: יש למלא נקודת התחלה ונקודה סופית, או לסמן "עבודה מהבית".');
+                        return;
+                    }
+                    if (!totalKmInput || parseFloat(totalKmInput) <= 0) {
+                        alert('שגיאה: יש להזין קילומטראז\' תקין, או לסמן "עבודה מהבית".');
+                        return;
+                    }
+                }
+
+                const hours = calculateHours(startTime, endTime);
+                const totalKm = isWorkFromHome ? 0 : (parseFloat(totalKmInput) || 0);
+                const kmRate = parseFloat(rates.km) || 1.2;
+                const hourlyRate = type === 'instruction' ? rates.instruction : rates.preparation;
+                
+                const payForHours = hours * hourlyRate;
+                const payForKm = totalKm * kmRate;
+
+                let routeText = 'עבודה מהבית';
+                if (!isWorkFromHome) {
+                    const validStops = stops.filter(s => s.trim() !== '');
+                    const routeParts = [];
+                    if (origin.trim()) routeParts.push(origin.trim());
+                    if (validStops.length > 0) routeParts.push(...validStops);
+                    if (destination.trim()) routeParts.push(destination.trim());
+                    routeText = routeParts.length > 0 ? routeParts.join(' < ') : 'ללא פירוט נסיעה';
+                }
+
+                const recordData = {
+                    id: editingId || Date.now(),
+                    date,
+                    type,
+                    startTime,
+                    endTime,
+                    hours,
+                    hourlyRate,
+                    payForHours,
+                    isWorkFromHome,
+                    origin: isWorkFromHome ? '' : origin,
+                    stops: isWorkFromHome ? [] : stops.filter(s => s.trim() !== ''),
+                    destination: isWorkFromHome ? '' : destination,
+                    routeText,
+                    totalKm,
+                    payForKm,
+                    totalPay: payForHours + payForKm,
+                    notes
+                };
+
+                if (editingId) {
+                    setLogs(logs.map(l => l.id === editingId ? recordData : l));
+                    setEditingId(null);
+                    alert('הדיווח עודכן בהצלחה!');
+                } else {
+                    setLogs([recordData, ...logs]);
+                    alert('הדיווח נשמר בהצלחה!');
+                }
+
+                const targetCycle = getPayCycleForDate(date);
+                setPayCycleMonth(targetCycle);
+
+                // איפוס הטופס
+                setDate(new Date().toISOString().split('T')[0]);
+                setStartTime('08:00');
+                setEndTime('16:00');
+                setType('instruction');
+                setIsWorkFromHome(false);
+                setOrigin('');
+                setStops([]);
+                setDestination('');
+                setTotalKmInput('');
+                setNotes('');
+            };
+
+            const handleEdit = (log) => {
+                setEditingId(log.id);
+                setDate(log.date);
+                setType(log.type);
+                setStartTime(log.startTime);
+                setEndTime(log.endTime);
+                setIsWorkFromHome(!!log.isWorkFromHome);
+                setOrigin(log.origin || '');
+                setStops(log.stops || []);
+                setDestination(log.destination || '');
+                setTotalKmInput(log.totalKm !== undefined && log.totalKm !== null ? String(log.totalKm) : '');
+                setNotes(log.notes || '');
+
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            };
+
+            const cancelEdit = () => {
+                setEditingId(null);
+                setDate(new Date().toISOString().split('T')[0]);
+                setStartTime('08:00');
+                setEndTime('16:00');
+                setType('instruction');
+                setIsWorkFromHome(false);
+                setOrigin('');
+                setStops([]);
+                setDestination('');
+                setTotalKmInput('');
+                setNotes('');
+            };
+
+            const deleteLog = (id) => {
+                if (confirm('האם אתה בטוח שברצונך למחוק דיווח זה?')) {
+                    setLogs(logs.filter(l => l.id !== id));
+                    if (editingId === id) cancelEdit();
+                }
+            };
+
+            const handleSaveRates = (e) => {
+                e.preventDefault();
+                setRates(tempRates);
+                setShowRatesModal(false);
+                alert('התעריפים עודכנו בהצלחה!');
+            };
+
+            const [cycleYear, cycleMonth] = payCycleMonth.split('-').map(Number);
+            const prevMonthDate = new Date(cycleYear, cycleMonth - 2, 1);
+            const prevYear = prevMonthDate.getFullYear();
+            const prevMonth = prevMonthDate.getMonth() + 1;
+
+            const part1StartDate = `${prevYear}-${String(prevMonth).padStart(2, '0')}-21`;
+            const part1EndDate = `${prevYear}-${String(prevMonth).padStart(2, '0')}-31`;
+
+            const part2StartDate = `${payCycleMonth}-01`;
+            const part2EndDate = `${payCycleMonth}-20`;
+
+            const part1Logs = logs.filter(l => l.date >= part1StartDate && l.date <= part1EndDate).sort((a,b) => a.date.localeCompare(b.date));
+            const part2Logs = logs.filter(l => l.date >= part2StartDate && l.date <= part2EndDate).sort((a,b) => a.date.localeCompare(b.date));
+
+            // חישוב סיכום מדויק
+            const calcSummary = (logList) => logList.reduce((acc, log) => {
+                const hours = log.hours || calculateHours(log.startTime, log.endTime);
+                const isInstruction = log.type === 'instruction';
+                const hourlyRate = log.hourlyRate || (isInstruction ? rates.instruction : rates.preparation);
+                const payForHours = hours * hourlyRate;
+                
+                const km = log.isWorkFromHome ? 0 : (parseFloat(log.totalKm) || 0);
+                const kmRate = parseFloat(rates.km) || 1.2;
+                const payForKm = km * kmRate;
+
+                if (isInstruction) {
+                    acc.instructionHours += hours;
+                    acc.instructionPay += payForHours;
+                } else {
+                    acc.prepHours += hours;
+                    acc.prepPay += payForHours;
+                }
+                acc.totalKm += km;
+                acc.travelPay += payForKm;
+                acc.totalPay += (payForHours + payForKm);
+                return acc;
+            }, { instructionHours: 0, instructionPay: 0, prepHours: 0, prepPay: 0, totalKm: 0, travelPay: 0, totalPay: 0 });
+
+            const summaryPart1 = calcSummary(part1Logs);
+            const summaryPart2 = calcSummary(part2Logs);
+
+            const totalCycleSummary = {
+                instructionHours: summaryPart1.instructionHours + summaryPart2.instructionHours,
+                instructionPay: summaryPart1.instructionPay + summaryPart2.instructionPay,
+                prepHours: summaryPart1.prepHours + summaryPart2.prepHours,
+                prepPay: summaryPart1.prepPay + summaryPart2.prepPay,
+                totalKm: summaryPart1.totalKm + summaryPart2.totalKm,
+                travelPay: summaryPart1.travelPay + summaryPart2.travelPay,
+                totalPay: summaryPart1.totalPay + summaryPart2.totalPay
+            };
+
+            const formatDateForDisplay = (dateStr) => {
+                if (!dateStr) return '';
+                const [y, m, d] = dateStr.split('-');
+                return `${d}/${m}/${y}`;
+            };
+
+            // פורמט תאריך לאקסל: D.M (למשל 22.9)
+            const formatDateForEmployerExcel = (dateStr) => {
+                if (!dateStr) return '';
+                const [y, m, d] = dateStr.split('-').map(Number);
+                return `${d}.${m}`;
+            };
+
+            // ייצוא קובץ Excel מעוצב בדיוק לפי כיווניות מימין לשמאל (RTL)
+            const exportEmployerExcel = () => {
+                const combined = [...part1Logs, ...part2Logs];
+                if (combined.length === 0) {
+                    alert('אין דיווחים במחזור זה לייצוא!');
+                    return;
+                }
+
+                const excelRows = [];
+                excelRows.push([
+                    "", "", 
+                    "תאריך", 
+                    "שעת התחלה", 
+                    "שעת סיום", 
+                    "סה\"כ שעות הדרכה", 
+                    "סה\"כ שעות הכנה", 
+                    "מסלול נסיעה", 
+                    "פירוט - הערות"
+                ]);
+
+                combined.forEach(l => {
+                    const formattedDate = formatDateForEmployerExcel(l.date);
+                    const instructionHours = l.type === 'instruction' ? l.hours : 0;
+                    const prepHours = l.type === 'preparation' ? l.hours : 0;
+                    
+                    let route = l.routeText || '';
+                    if (l.isWorkFromHome) {
+                        route = 'עבודה מהבית';
+                    } else if (route) {
+                        route = route.replaceAll(' > ', ' < ');
+                    }
+
+                    const note = l.notes || (l.type === 'instruction' ? 'יום הדרכה' : '');
+
+                    excelRows.push([
+                        "", "",
+                        formattedDate,
+                        l.startTime,
+                        l.endTime,
+                        instructionHours,
+                        prepHours,
+                        route,
+                        note
+                    ]);
+                });
+
+                for (let i = 0; i < 25; i++) {
+                    excelRows.push(["", "", "", "", "", "", "", "", ""]);
+                }
+
+                const ws = XLSX.utils.aoa_to_sheet(excelRows);
+                ws['!views'] = [{ RTL: true }];
+
+                ws['!cols'] = [
+                    { wch: 10 }, { wch: 10 },
+                    { wch: 12 }, { wch: 14 },
+                    { wch: 14 }, { wch: 18 },
+                    { wch: 18 }, { wch: 45 },
+                    { wch: 30 }
+                ];
+
+                const wb = XLSX.utils.book_new();
+                if (!wb.Workbook) wb.Workbook = {};
+                if (!wb.Workbook.Views) wb.Workbook.Views = [];
+                wb.Workbook.Views[0] = { RTL: true };
+
+                XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+                XLSX.writeFile(wb, `דו"ח_שעות_${payCycleMonth}.xlsx`);
+            };
+
+            // **מסך הרשמה / התחברות**
+            if (!isLoggedIn) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center bg-slate-100 px-4 py-8">
+                        {/* כותרת ראשית בולטת בראש העמוד */}
+                        <div className="text-center mb-6 max-w-lg">
+                            <h1 className="text-3xl sm:text-4xl font-extrabold text-indigo-900 leading-tight">
+                                אפליקציית חישוב שכר חודשי
+                            </h1>
+                            <p className="text-xl font-bold text-indigo-600 mt-1">
+                                מדריכי קדימה מדע
+                            </p>
+                        </div>
+
+                        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 border border-slate-200 space-y-6">
+                            <div className="text-center space-y-2">
+                                <div className="text-4xl">{isRegisterMode ? '📝' : '🔐'}</div>
+                                <h2 className="text-2xl font-bold text-slate-800">
+                                    {isRegisterMode ? 'הרשמה ראשונית למערכת' : 'התחברות למערכת'}
+                                </h2>
+                                <p className="text-slate-500 text-sm">
+                                    {isRegisterMode 
+                                        ? 'צור שם משתמש וסיסמה פרטיים עבור המכשיר שלך' 
+                                        : 'הזן את פרטי ההתחברות שלך לצפייה בדוח השעות'}
+                                </p>
+                            </div>
+
+                            {/* תיבת התראה / הסבר חשוב על אופי השמירה המקומית */}
+                            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-xs text-amber-900 space-y-3 leading-relaxed">
+                                <div className="font-bold text-sm text-amber-800 flex items-center justify-center gap-1.5 text-center">
+                                    <span>📢</span> דגש חשוב לגבי השימוש באפליקציה:
+                                </div>
+                                <p className="text-center">
+                                    האפליקציה פועלת באופן <strong>עצמאי וחינמי</strong>, ללא שרת מרכזי או ענן. כל הנתונים, הדיווחים והפרטים האישיים נשמרים <strong>אך ורק בזיכרון המקומי של הדפדפן במכשיר שבו אתם עובדים</strong>.
+                                </p>
+
+                                <div className="text-center font-extrabold text-sm text-amber-800 pt-2 border-t border-amber-200/60">
+                                    👇 לכן חשוב לזכור:
+                                </div>
+
+                                <ul className="list-disc list-inside space-y-1 font-medium text-amber-950">
+                                    <li><strong>עבודה ממכשיר קבוע:</strong> יש לעבוד תמיד מאותו מכשיר (הנתונים לא מסתנכרנים בין הטלפון למחשב).</li>
+                                    <li><strong>פרטיות מלאה:</strong> הנתונים נשארים פרטיים לגמרי במכשירכם.</li>
+                                    <li><strong>גיבוי:</strong> מומלץ לייצא דוח Excel בסוף כל מחזור שכר! 📊</li>
+                                </ul>
+                            </div>
+
+                            {authError && (
+                                <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm text-center font-medium border border-red-200">
+                                    {authError}
+                                </div>
+                            )}
+
+                            {isRegisterMode ? (
+                                /* טופס הרשמה ראשונית */
+                                <form onSubmit={handleRegister} className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">שם משתמש</label>
+                                        <input 
+                                            type="text" 
+                                            value={usernameInput} 
+                                            onChange={e => setUsernameInput(e.target.value)}
+                                            placeholder="בחר שם משתמש"
+                                            className="w-full border rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                                            required
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">סיסמה</label>
+                                        <input 
+                                            type="password" 
+                                            value={passwordInput} 
+                                            onChange={e => setPasswordInput(e.target.value)}
+                                            placeholder="בחר סיסמה"
+                                            className="w-full border rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                                            required
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">אימות סיסמה</label>
+                                        <input 
+                                            type="password" 
+                                            value={confirmPasswordInput} 
+                                            onChange={e => setConfirmPasswordInput(e.target.value)}
+                                            placeholder="הזן שוב את הסיסמה"
+                                            className="w-full border rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                                            required
+                                        />
+                                    </div>
+
+                                    <button 
+                                        type="submit" 
+                                        className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-lg transition shadow-md"
+                                    >
+                                        צור חשבון והתחבר ➔
+                                    </button>
+
+                                    {registeredUser && (
+                                        <button 
+                                            type="button" 
+                                            onClick={() => { setIsRegisterMode(false); setAuthError(''); }}
+                                            className="w-full text-xs text-indigo-600 hover:underline text-center font-medium pt-2 block"
+                                        >
+                                            כבר נרשמת? לחץ כאן להתחברות
+                                        </button>
+                                    )}
+                                </form>
+                            ) : (
+                                /* טופס התחברות */
+                                <form onSubmit={handleLogin} className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">שם משתמש</label>
+                                        <input 
+                                            type="text" 
+                                            value={usernameInput} 
+                                            onChange={e => setUsernameInput(e.target.value)}
+                                            placeholder="הזן שם משתמש"
+                                            className="w-full border rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                                            required
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">סיסמה</label>
+                                        <input 
+                                            type="password" 
+                                            value={passwordInput} 
+                                            onChange={e => setPasswordInput(e.target.value)}
+                                            placeholder="הזן סיסמה"
+                                            className="w-full border rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                                            required
+                                        />
+                                    </div>
+
+                                    <button 
+                                        type="submit" 
+                                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg transition shadow-md"
+                                    >
+                                        כניסה למערכת ➔
+                                    </button>
+
+                                    <button 
+                                        type="button" 
+                                        onClick={handleSwitchToRegister}
+                                        className="w-full text-xs text-indigo-600 hover:underline text-center font-medium pt-2 block"
+                                    >
+                                        רוצה להירשם מחדש / ליצור משתמש חדש?
+                                    </button>
+                                </form>
+                            )}
+                        </div>
+                    </div>
+                );
+            }
+
+            const renderTable = (title, dateRangeText, logList) => (
+                <div className="bg-white rounded-xl shadow-md p-5 border border-slate-100 space-y-3">
+                    <div className="flex justify-between items-center border-b pb-2">
+                        <h3 className="font-bold text-slate-700 text-lg">{title}</h3>
+                        <span className="text-xs bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-full font-medium">{dateRangeText}</span>
+                    </div>
+                    {logList.length === 0 ? (
+                        <p className="text-center text-slate-400 py-4 text-sm">אין דיווחים בתקופה זו</p>
+                    ) : (
+                        <div className="w-full overflow-x-auto">
+                            <table className="w-full text-right text-sm border-collapse">
+                                <thead className="bg-slate-100 text-slate-600 border-b">
+                                    <tr>
+                                        <th className="p-2.5 whitespace-nowrap">תאריך</th>
+                                        <th className="p-2.5 whitespace-nowrap">סוג</th>
+                                        <th className="p-2.5 whitespace-nowrap">שעות</th>
+                                        <th className="p-2.5">מסלול נסיעה</th>
+                                        <th className="p-2.5 whitespace-nowrap">ק"מ</th>
+                                        <th className="p-2.5 whitespace-nowrap">לתשלום</th>
+                                        <th className="p-2.5 whitespace-nowrap text-center">פעולות</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                    {logList.map(log => {
+                                        const hours = log.hours || calculateHours(log.startTime, log.endTime);
+                                        const isInstruction = log.type === 'instruction';
+                                        const hourlyRate = log.hourlyRate || (isInstruction ? rates.instruction : rates.preparation);
+                                        const payForHours = hours * hourlyRate;
+                                        
+                                        const totalKm = log.isWorkFromHome ? 0 : (parseFloat(log.totalKm) || 0);
+                                        const kmRate = parseFloat(rates.km) || 1.2;
+                                        const payForKm = totalKm * kmRate;
+                                        const totalPay = payForHours + payForKm;
+
+                                        return (
+                                            <tr key={log.id} className={`hover:bg-slate-50 transition ${editingId === log.id ? 'bg-amber-50' : ''}`}>
+                                                <td className="p-2.5 font-medium whitespace-nowrap">{formatDateForDisplay(log.date)}</td>
+                                                <td className="p-2.5 whitespace-nowrap">
+                                                    <span className={`px-2 py-0.5 rounded text-xs font-semibold ${isInstruction ? 'bg-blue-100 text-blue-800' : 'bg-purple-100 text-purple-800'}`}>
+                                                        {isInstruction ? 'הדרכה' : 'הכנה'}
+                                                    </span>
+                                                </td>
+                                                <td className="p-2.5 whitespace-nowrap">{hours} ש' ({log.startTime}-{log.endTime})</td>
+                                                <td className="p-2.5 text-xs font-medium text-slate-700 leading-relaxed">
+                                                    {log.isWorkFromHome ? (
+                                                        <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded font-bold border border-emerald-200">
+                                                            🏠 עבודה מהבית
+                                                        </span>
+                                                    ) : (
+                                                        log.routeText || '-'
+                                                    )}
+                                                </td>
+                                                <td className="p-2.5 text-xs whitespace-nowrap">{totalKm} ק"מ</td>
+                                                <td className="p-2.5 font-bold text-emerald-600 whitespace-nowrap">₪{totalPay.toFixed(2)}</td>
+                                                <td className="p-2.5 whitespace-nowrap text-center">
+                                                    <div className="flex items-center justify-center gap-2">
+                                                        <button 
+                                                            onClick={() => handleEdit(log)}
+                                                            className="text-indigo-600 hover:text-indigo-800 text-xs font-semibold px-2 py-1 bg-indigo-50 hover:bg-indigo-100 rounded transition"
+                                                            title="ערוך דיווח"
+                                                        >
+                                                            ✏️ ערוך
+                                                        </button>
+                                                        <button 
+                                                            onClick={() => deleteLog(log.id)}
+                                                            className="text-red-500 hover:text-red-700 text-xs font-semibold px-2 py-1 bg-red-50 hover:bg-red-100 rounded transition"
+                                                            title="מחק דיווח"
+                                                        >
+                                                            🗑️ מחק
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </div>
+            );
+
+            return (
+                <div className="min-h-screen bg-slate-50 text-slate-800 pb-12">
+                    {/* Header */}
+                    <header className="bg-indigo-600 text-white shadow-lg py-6 px-4">
+                        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
+                            <div>
+                                <h1 className="text-2xl font-bold">אפליקציית חישוב שכר חודשי - מדריכי קדימה מדע</h1>
+                                <p className="text-indigo-200 text-sm">שלום {registeredUser?.username || 'משתמש'} | חישוב מותאם לפי מחזורי שכר</p>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <button 
+                                    onClick={() => { setTempRates(rates); setShowRatesModal(true); }}
+                                    className="bg-indigo-500 hover:bg-indigo-400 px-4 py-2 rounded-lg text-sm font-medium transition shadow flex items-center gap-2"
+                                >
+                                    ⚙️ הגדרת תעריפים
+                                </button>
+                                <button 
+                                    onClick={handleLogout}
+                                    className="bg-red-500 hover:bg-red-600 text-white px-3 py-2 rounded-lg text-sm font-medium transition shadow"
+                                    title="התנתק"
+                                >
+                                    🚪 יציאה
+                                </button>
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="max-w-6xl mx-auto px-4 mt-8 grid grid-cols-1 md:grid-cols-3 gap-8">
+                        {/* Main Form & Tables */}
+                        <div className="md:col-span-2 space-y-6">
+                            {/* Input Form Card */}
+                            <div className={`bg-white rounded-xl shadow-md p-6 border transition ${editingId ? 'border-amber-400 ring-2 ring-amber-200' : 'border-slate-100'}`}>
+                                <div className="flex justify-between items-center mb-4">
+                                    <h2 className="text-xl font-bold text-slate-700 flex items-center gap-2">
+                                        <span>{editingId ? '✏️' : '📝'}</span> 
+                                        {editingId ? 'עריכת דיווח קיים' : 'הזנת יום עבודה חדש'}
+                                    </h2>
+                                    {editingId && (
+                                        <button 
+                                            type="button" 
+                                            onClick={cancelEdit} 
+                                            className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold px-3 py-1.5 rounded-lg transition"
+                                        >
+                                            ביטול עריכה ✕
+                                        </button>
+                                    )}
+                                </div>
+
+                                <form onSubmit={handleSubmit} className="space-y-4">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-600 mb-1">תאריך</label>
+                                            <input 
+                                                type="date" 
+                                                value={date} 
+                                                onChange={e => setDate(e.target.value)}
+                                                className="w-full border rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-indigo-500"
+                                                required
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-600 mb-1">סוג עבודה</label>
+                                            <select 
+                                                value={type} 
+                                                onChange={e => setType(e.target.value)}
+                                                className="w-full border rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                                            >
+                                                <option value="instruction">הדרכה ({rates.instruction} ₪/שעה)</option>
+                                                <option value="preparation">הכנה ({rates.preparation} ₪/שעה)</option>
+                                            </select>
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-600 mb-1">שעת התחלה</label>
+                                            <input 
+                                                type="time" 
+                                                value={startTime} 
+                                                onChange={e => setStartTime(e.target.value)}
+                                                className="w-full border rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-indigo-500"
+                                                required
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-600 mb-1">שעת סיום</label>
+                                            <input 
+                                                type="time" 
+                                                value={endTime} 
+                                                onChange={e => setEndTime(e.target.value)}
+                                                className="w-full border rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-indigo-500"
+                                                required
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-indigo-50 p-3 rounded-lg text-indigo-900 text-sm flex justify-between items-center">
+                                        <span>סה"כ שעות ביום זה:</span>
+                                        <span className="font-bold text-lg">{calculateHours(startTime, endTime)} שעות</span>
+                                    </div>
+
+                                    {/* Trips Section */}
+                                    <div className="pt-2 border-t mt-4 space-y-3">
+                                        <div className="flex justify-between items-center flex-wrap gap-2">
+                                            <label className="block text-sm font-medium text-slate-700">🚗 פירוט נסיעות</label>
+                                            <div className="flex items-center gap-3">
+                                                <label className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200 px-3 py-1 rounded-lg text-xs font-bold cursor-pointer hover:bg-emerald-100 transition">
+                                                    <input 
+                                                        type="checkbox" 
+                                                        checked={isWorkFromHome} 
+                                                        onChange={e => setIsWorkFromHome(e.target.checked)}
+                                                        className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                                                    />
+                                                    🏠 עבודה מהבית
+                                                </label>
+
+                                                {!isWorkFromHome && (
+                                                    <button 
+                                                        type="button" 
+                                                        onClick={addStop}
+                                                        className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold px-2.5 py-1 rounded-lg border border-indigo-200 transition"
+                                                    >
+                                                        + הוסף נקודת ביניים
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {isWorkFromHome ? (
+                                            <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg text-slate-600 text-xs font-medium text-center">
+                                                נבחרה עבודה מהבית — לא יחושב החזר נסיעות ליום זה.
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div>
+                                                    <label className="block text-xs text-slate-500 mb-1">נקודת התחלה: <span className="text-red-500">*</span></label>
+                                                    <input 
+                                                        type="text" 
+                                                        placeholder="הזן כתובת / נקודת מוצא"
+                                                        value={origin}
+                                                        onChange={e => setOrigin(e.target.value)}
+                                                        className="w-full border rounded-lg p-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                                        required={!isWorkFromHome}
+                                                    />
+                                                </div>
+
+                                                {stops.map((stop, idx) => (
+                                                    <div key={idx} className="flex gap-2 items-center">
+                                                        <input 
+                                                            type="text" 
+                                                            placeholder={`נקודת ביניים ${idx + 1}`}
+                                                            value={stop}
+                                                            onChange={e => updateStop(idx, e.target.value)}
+                                                            className="w-full border rounded-lg p-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
+                                                        />
+                                                        <button 
+                                                            type="button" 
+                                                            onClick={() => removeStop(idx)}
+                                                            className="text-red-500 hover:text-red-700 font-bold px-2 py-1 rounded hover:bg-red-50"
+                                                        >
+                                                            ✕
+                                                        </button>
+                                                    </div>
+                                                ))}
+
+                                                <div>
+                                                    <label className="block text-xs text-slate-500 mb-1">נקודה סופית: <span className="text-red-500">*</span></label>
+                                                    <input 
+                                                        type="text" 
+                                                        placeholder="הזן כתובת / יעד סופי"
+                                                        value={destination}
+                                                        onChange={e => setDestination(e.target.value)}
+                                                        className="w-full border rounded-lg p-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                                        required={!isWorkFromHome}
+                                                    />
+                                                </div>
+
+                                                <div>
+                                                    <label className="block text-xs text-slate-500 mb-1">סה"כ קילומטראז' (ק"מ): <span className="text-red-500">*</span></label>
+                                                    <input 
+                                                        type="number" 
+                                                        step="0.1"
+                                                        placeholder='הזן ק"מ כולל'
+                                                        value={totalKmInput}
+                                                        onChange={e => setTotalKmInput(e.target.value)}
+                                                        className="w-full border rounded-lg p-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                                        required={!isWorkFromHome}
+                                                    />
+                                                    {totalKmInput && (
+                                                        <p className="text-xs text-emerald-600 font-medium mt-1">
+                                                            החזר נסיעות ליום זה: ₪{(parseFloat(totalKmInput) * (rates.km || 1.2)).toFixed(2)} (לפי {rates.km || 1.2} ₪/ק"מ)
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-600 mb-1">הערות / פירוט</label>
+                                        <textarea 
+                                            rows="2" 
+                                            value={notes} 
+                                            onChange={e => setNotes(e.target.value)}
+                                            placeholder="יום הדרכה / זום הכשרת פדגוגיה..."
+                                            className="w-full border rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                        ></textarea>
+                                    </div>
+
+                                    <button 
+                                        type="submit" 
+                                        className={`w-full font-bold py-3 rounded-lg shadow-md transition ${editingId ? 'bg-amber-600 hover:bg-amber-700 text-white' : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}
+                                    >
+                                        {editingId ? 'עדכן דיווח קיים' : 'שמור דיווח ואפס טופס'}
+                                    </button>
+                                </form>
+                            </div>
+
+                            {/* Selection Header for Pay Cycle */}
+                            <div className="bg-indigo-900 text-white p-4 rounded-xl flex flex-col sm:flex-row justify-between items-center gap-4">
+                                <div>
+                                    <h2 className="font-bold text-lg">📅 בחירת מחזור שכר</h2>
+                                    <p className="text-xs text-indigo-200">מציג נתונים מה-21 לחודש הקודם ועד ה-20 לחודש שנבחר</p>
+                                </div>
+                                <div className="flex gap-2 items-center">
+                                    <input 
+                                        type="month" 
+                                        value={payCycleMonth} 
+                                        onChange={e => setPayCycleMonth(e.target.value)}
+                                        className="bg-white text-slate-800 rounded-lg p-2 text-sm font-bold outline-none"
+                                    />
+                                    <button 
+                                        onClick={exportEmployerExcel}
+                                        className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-2 rounded-lg text-sm font-bold transition shadow flex items-center gap-1"
+                                    >
+                                        <span>📊</span> ייצא מותאם ל-Excel
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Tables for Part 1 and Part 2 */}
+                            {renderTable("1️⃣ חלק ראשון: סוף חודש קודם", `21/${String(prevMonth).padStart(2,'0')} עד ${new Date(prevYear, prevMonth, 0).getDate()}/${String(prevMonth).padStart(2,'0')}`, part1Logs)}
+                            {renderTable("2️⃣ חלק שני: תחילת חודש נוכחי", `01/${String(cycleMonth).padStart(2,'0')} עד 20/${String(cycleMonth).padStart(2,'0')}`, part2Logs)}
+                        </div>
+
+                        {/* Monthly Summary Sidebar */}
+                        <div className="space-y-6">
+                            <div className="bg-white rounded-xl shadow-md p-6 border border-slate-100 sticky top-8">
+                                <h2 className="text-xl font-bold mb-4 text-slate-700 border-b pb-2">
+                                    📊 סיכום מחזור שכר כולל
+                                </h2>
+                                <p className="text-xs text-slate-500 mb-4 font-medium">
+                                    תקופה: 21/{String(prevMonth).padStart(2,'0')}/{prevYear} — 20/{String(cycleMonth).padStart(2,'0')}/{cycleYear}
+                                </p>
+
+                                <div className="space-y-3 text-sm">
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-slate-600">סה"כ שעות הדרכה:</span>
+                                        <span className="font-semibold">{totalCycleSummary.instructionHours} שעות</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-slate-600">שכר הדרכה:</span>
+                                        <span className="font-semibold">₪{totalCycleSummary.instructionPay.toFixed(2)}</span>
+                                    </div>
+                                    <hr />
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-slate-600">סה"כ שעות הכנה:</span>
+                                        <span className="font-semibold">{totalCycleSummary.prepHours} שעות</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-slate-600">שכר הכנה:</span>
+                                        <span className="font-semibold">₪{totalCycleSummary.prepPay.toFixed(2)}</span>
+                                    </div>
+                                    <hr />
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-slate-600">סה"כ קילומטראז':</span>
+                                        <span className="font-semibold">{totalCycleSummary.totalKm} ק"מ</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-slate-600">החזר נסיעות ({rates.km || 1.2} ₪/ק"מ):</span>
+                                        <span className="font-semibold">₪{totalCycleSummary.travelPay.toFixed(2)}</span>
+                                    </div>
+
+                                    <div className="bg-slate-50 p-3 rounded-lg space-y-1 text-xs text-slate-600 mt-2">
+                                        <div className="flex justify-between">
+                                            <span>סה"כ חלק 1 (21–סוף חודש):</span>
+                                            <span className="font-bold">₪{summaryPart1.totalPay.toFixed(2)}</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>סה"כ חלק 2 (1–20 לחודש):</span>
+                                            <span className="font-bold">₪{summaryPart2.totalPay.toFixed(2)}</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="border-t-2 border-indigo-100 pt-3 mt-3 flex justify-between items-center text-lg font-bold text-indigo-900">
+                                        <span>סה"כ לתשלום במחזור:</span>
+                                        <span className="text-2xl font-extrabold text-emerald-600">₪{totalCycleSummary.totalPay.toFixed(2)}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+
+                    {/* Rates Modal */}
+                    {showRatesModal && (
+                        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+                            <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl space-y-4">
+                                <h3 className="text-xl font-bold text-slate-800 border-b pb-2">⚙️ הגדרות תעריפים</h3>
+                                <form onSubmit={handleSaveRates} className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-600 mb-1">תעריף שעת הדרכה (₪)</label>
+                                        <input 
+                                            type="number" 
+                                            step="0.1"
+                                            value={tempRates.instruction} 
+                                            onChange={e => setTempRates({ ...tempRates, instruction: parseFloat(e.target.value) || 0 })}
+                                            className="w-full border rounded-lg p-2"
+                                            required
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-600 mb-1">תעריף שעת הכנה (₪)</label>
+                                        <input 
+                                            type="number" 
+                                            step="0.1"
+                                            value={tempRates.preparation} 
+                                            onChange={e => setTempRates({ ...tempRates, preparation: parseFloat(e.target.value) || 0 })}
+                                            className="w-full border rounded-lg p-2"
+                                            required
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-600 mb-1">החזר נסיעות לק"מ (₪)</label>
+                                        <input 
+                                            type="number" 
+                                            step="0.1"
+                                            value={tempRates.km} 
+                                            onChange={e => setTempRates({ ...tempRates, km: parseFloat(e.target.value) || 0 })}
+                                            className="w-full border rounded-lg p-2"
+                                            required
+                                        />
+                                    </div>
+
+                                    <div className="flex justify-end gap-2 pt-2 border-t">
+                                        <button 
+                                            type="button" 
+                                            onClick={() => setShowRatesModal(false)}
+                                            className="px-4 py-2 border rounded-lg text-sm text-slate-600 hover:bg-slate-50"
+                                        >
+                                            ביטול
+                                        </button>
+                                        <button 
+                                            type="submit" 
+                                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium"
+                                        >
+                                            שמור תעריפים
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
